@@ -37,6 +37,7 @@ from PyQt6.QtWidgets import (
     QSizePolicy,
     QSlider,
     QSpinBox,
+    QStackedWidget,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -533,10 +534,11 @@ class CompressTab(BaseTab):
         self.list_widget.setAlternatingRowColors(True)
         layout.addWidget(self.list_widget)
 
-        # 设置
+        # ── 压缩设置 ──
         cfg_group = QGroupBox("压缩设置")
         cg = QGridLayout(cfg_group)
 
+        # 行 0: 质量
         cg.addWidget(QLabel("质量 (1-100):"), 0, 0)
         self.quality_slider = QSlider(Qt.Orientation.Horizontal)
         self.quality_slider.setRange(1, 100)
@@ -546,19 +548,93 @@ class CompressTab(BaseTab):
         cg.addWidget(self.quality_slider, 0, 1)
         cg.addWidget(self.quality_label, 0, 2)
 
-        cg.addWidget(QLabel("最大边长 (px):"), 1, 0)
+        # 行 1: 缩放模式
+        cg.addWidget(QLabel("缩放模式:"), 1, 0)
+        self.resize_mode = QComboBox()
+        self.resize_mode.addItem("不缩放", "none")
+        self.resize_mode.addItem("按比例缩放（最大边长）", "max_dim")
+        self.resize_mode.addItem("自定义宽高", "exact")
+        self.resize_mode.addItem("按百分比缩放", "percent")
+        self.resize_mode.currentIndexChanged.connect(self._on_resize_mode_changed)
+        cg.addWidget(self.resize_mode, 1, 1)
+
+        # 行 2: 缩放参数（QStackedWidget 安全切换）
+        self.param_stack = QStackedWidget()
+
+        # -- 面板 0: 无参数（不缩放）--
+        self.param_stack.addWidget(QWidget())
+
+        # -- 面板 1: 按比例缩放 --
+        p_maxdim = QWidget()
+        lay_maxdim = QHBoxLayout(p_maxdim)
+        lay_maxdim.setContentsMargins(0, 0, 0, 0)
+        lay_maxdim.addWidget(QLabel("最大边长"))
         self.max_dim_spin = QSpinBox()
         self.max_dim_spin.setRange(0, 10000)
         self.max_dim_spin.setValue(0)
         self.max_dim_spin.setSpecialValueText("不限")
-        cg.addWidget(self.max_dim_spin, 1, 1)
+        lay_maxdim.addWidget(self.max_dim_spin)
+        lay_maxdim.addWidget(QLabel("px"))
+        lay_maxdim.addStretch()
+        self.param_stack.addWidget(p_maxdim)
 
-        cg.addWidget(QLabel("输出格式:"), 2, 0)
+        # -- 面板 2: 自定义宽高 --
+        p_exact = QWidget()
+        lay_exact = QHBoxLayout(p_exact)
+        lay_exact.setContentsMargins(0, 0, 0, 0)
+        lay_exact.addWidget(QLabel("宽"))
+        self.exact_w = QSpinBox()
+        self.exact_w.setRange(1, 10000)
+        self.exact_w.setValue(800)
+        lay_exact.addWidget(self.exact_w)
+        lay_exact.addWidget(QLabel("×"))
+        self.exact_h = QSpinBox()
+        self.exact_h.setRange(1, 10000)
+        self.exact_h.setValue(600)
+        lay_exact.addWidget(self.exact_h)
+        lay_exact.addWidget(QLabel("px"))
+        lay_exact.addStretch()
+        self.param_stack.addWidget(p_exact)
+
+        # -- 面板 3: 按百分比 --
+        p_pct = QWidget()
+        lay_pct = QHBoxLayout(p_pct)
+        lay_pct.setContentsMargins(0, 0, 0, 0)
+        lay_pct.addWidget(QLabel("缩放至"))
+        self.scale_pct = QSpinBox()
+        self.scale_pct.setRange(1, 100)
+        self.scale_pct.setValue(50)
+        self.scale_pct.setSuffix(" %")
+        lay_pct.addWidget(self.scale_pct)
+        lay_pct.addStretch()
+        self.param_stack.addWidget(p_pct)
+
+        cg.addWidget(self.param_stack, 2, 1)
+
+        # 行 3: 输出格式
+        cg.addWidget(QLabel("输出格式:"), 3, 0)
         self.fmt_combo = QComboBox()
         self.fmt_combo.addItem("保持原格式", None)
         for f in ["JPEG", "PNG", "WEBP"]:
             self.fmt_combo.addItem(f, f)
-        cg.addWidget(self.fmt_combo, 2, 1)
+        cg.addWidget(self.fmt_combo, 3, 1)
+
+        # 行 4: 目标文件大小
+        self.target_check = QCheckBox("限制文件大小：不超过")
+        self.target_check.toggled.connect(self._on_target_toggled)
+        cg.addWidget(self.target_check, 4, 0)
+
+        self.target_size = QSpinBox()
+        self.target_size.setRange(1, 999999)
+        self.target_size.setValue(500)
+        self.target_size.setEnabled(False)
+        cg.addWidget(self.target_size, 4, 1)
+
+        self.target_unit = QComboBox()
+        self.target_unit.addItem("KB", 1024)
+        self.target_unit.addItem("MB", 1024 * 1024)
+        self.target_unit.setEnabled(False)
+        cg.addWidget(self.target_unit, 4, 2)
 
         layout.addWidget(cfg_group)
 
@@ -567,6 +643,24 @@ class CompressTab(BaseTab):
         layout.addWidget(self.btn_compress)
 
         layout.addWidget(self.status_label)
+
+        # 初始状态：默认显示"不缩放"
+        self._on_resize_mode_changed(0)
+        self._on_target_toggled(False)
+
+    # ── 缩放模式切换 ──
+
+    def _on_resize_mode_changed(self, idx: int):
+        """根据选中的缩放模式切换参数面板。"""
+        # 面板索引与 QComboBox 添加顺序一致:
+        # 0=不缩放, 1=最大边长, 2=自定义宽高, 3=百分比
+        self.param_stack.setCurrentIndex(idx)
+
+    def _on_target_toggled(self, checked: bool):
+        self.target_size.setEnabled(checked)
+        self.target_unit.setEnabled(checked)
+
+    # ── 文件列表操作 ──
 
     def _add_files(self):
         files, _ = QFileDialog.getOpenFileNames(
@@ -596,6 +690,8 @@ class CompressTab(BaseTab):
         self.list_widget.clear()
         self.set_status("已清空列表")
 
+    # ── 开始压缩 ──
+
     def _compress(self):
         if not self.file_list:
             self.warn_box("提示", "请先添加图片")
@@ -609,18 +705,45 @@ class CompressTab(BaseTab):
 
         settings.setValue("compress/last_output_dir", out_dir)
 
+        # 收集参数
         quality = self.quality_slider.value()
-        max_dim = self.max_dim_spin.value() or None
+        mode = self.resize_mode.currentData()
         out_fmt = self.fmt_combo.currentData()
+
+        # 缩放参数
+        max_dim = None
+        exact_size = None
+        scale_percent = None
+
+        if mode == "max_dim":
+            max_dim = self.max_dim_spin.value() or None
+        elif mode == "exact":
+            exact_size = (self.exact_w.value(), self.exact_h.value())
+        elif mode == "percent":
+            scale_percent = self.scale_pct.value()
+
+        # 目标文件大小
+        target_filesize = None
+        if self.target_check.isChecked():
+            val = self.target_size.value()
+            unit = self.target_unit.currentData()
+            target_filesize = val * unit
 
         total = len(self.file_list)
         success = 0
+        details: list[str] = []
 
         for i, src in enumerate(self.file_list):
             try:
                 img = open_image(src)
                 processed_img, save_kw = compress_image(
-                    img, quality=quality, max_dimension=max_dim, output_format=out_fmt
+                    img,
+                    quality=quality,
+                    max_dimension=max_dim,
+                    exact_size=exact_size,
+                    scale_percent=scale_percent,
+                    target_filesize=target_filesize,
+                    output_format=out_fmt,
                 )
 
                 if out_fmt:
@@ -635,22 +758,33 @@ class CompressTab(BaseTab):
                 save_image(processed_img, out_path, save_kw)
                 img.close()
 
-                # 显示压缩效果
                 new_size = os.path.getsize(out_path)
                 old_size = os.path.getsize(src)
                 ratio = (1 - new_size / old_size) * 100 if old_size else 0
-                self.set_status(
-                    f"进度: {i + 1}/{total} — {out_name} "
-                    f"({_format_size(old_size)} → {_format_size(new_size)}, "
-                    f"缩减 {ratio:.0f}%)"
+
+                # 显示目标质量信息
+                target_q = save_kw.get("_target_quality", None)
+                q_info = f", quality目标={target_q}" if target_q else ""
+
+                line = (
+                    f"{out_name}  "
+                    f"{_format_size(old_size)} → {_format_size(new_size)} "
+                    f"(缩减 {ratio:.0f}%){q_info}"
                 )
+                details.append(line)
+                self.set_status(f"进度: {i + 1}/{total} — {out_name}")
                 success += 1
                 QApplication.processEvents()
             except Exception as e:
                 self.set_status(f"❌ 压缩失败 {Path(src).name}: {e}", error=True)
 
+        # 汇总
+        msg = (
+            f"压缩完成！成功 {success}/{total} 个文件\n"
+            f"输出目录: {out_dir}\n\n" + "\n".join(details)
+        )
         self.set_status(f"✅ 压缩完成！成功 {success}/{total} 个文件")
-        self.info_box("完成", f"成功压缩 {success}/{total} 个文件\n输出目录: {out_dir}")
+        self.info_box("完成", msg)
 
     # ── 拖拽支持 ────────────────────────────────────────────────
 

@@ -176,8 +176,8 @@ python main.py
 ```bash
 pip install pyinstaller
 
-# 打包（无控制台窗口）
-pyinstaller -F -w main.py
+# 打包（无控制台窗口）  PicTools.exe
+pyinstaller -F -w --name PicTools --icon logo.ico main.py
 
 # 输出在 dist/main.exe
 ```

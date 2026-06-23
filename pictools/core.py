@@ -264,16 +264,23 @@ def compress_image(
     image: Image.Image,
     quality: int = 85,
     max_dimension: Optional[int] = None,
+    exact_size: Optional[tuple[int, int]] = None,
+    scale_percent: Optional[int] = None,
+    target_filesize: Optional[int] = None,
     output_format: Optional[str] = None,
 ) -> tuple[Image.Image, dict]:
     """压缩图片。
 
-    通过降低质量 + 限制最大尺寸来压缩。
+    通过降低质量、限制最大尺寸、自定义宽高、百分比缩放等方式压缩。
+    支持目标文件大小（自动调节质量直到满足要求）。
 
     Args:
         image: Pillow Image 对象。
         quality: JPEG/WEBP 质量 (1-100)。
-        max_dimension: 最大边长（像素），超过则等比例缩小。
+        max_dimension: 最大边长（像素），等比例缩小。
+        exact_size: 自定义宽高 (width, height)。
+        scale_percent: 缩放百分比 (1-100)。
+        target_filesize: 目标文件大小（字节），自动调节 quality。
         output_format: 输出格式，影响保存参数。
 
     Returns:
@@ -281,31 +288,98 @@ def compress_image(
     """
     img = image.copy()
 
-    # 1) 按最大边长缩小
-    if max_dimension:
+    # ── 1) 缩放处理 ──
+    if exact_size:
+        # 自定义宽高
+        img = img.resize((exact_size[0], exact_size[1]), Image.LANCZOS)
+    elif scale_percent is not None and 0 < scale_percent <= 100:
+        # 按百分比缩放
+        ratio = scale_percent / 100.0
+        new_size = (int(img.width * ratio), int(img.height * ratio))
+        img = img.resize(new_size, Image.LANCZOS)
+    elif max_dimension:
+        # 按最大边长等比例缩小
         max_side = max(img.size)
         if max_side > max_dimension:
             ratio = max_dimension / max_side
-            new_size = (int(img.size[0] * ratio), int(img.size[1] * ratio))
+            new_size = (int(img.width * ratio), int(img.height * ratio))
             img = img.resize(new_size, Image.LANCZOS)
 
-    # 2) 准备保存参数
+    # ── 2) 准备保存参数 ──
     fmt = (output_format or img.format or "JPEG").upper()
-    save_kwargs = {"optimize": True}
+    save_kwargs: dict = {"optimize": True}
+    actual_quality = quality
 
     if fmt == "JPEG":
         img = _to_rgb(img)
-        save_kwargs["quality"] = max(1, min(100, quality))
+        save_kwargs["quality"] = actual_quality
     elif fmt == "PNG":
         img = img.convert("RGBA") if img.mode != "RGBA" else img
-        # PNG 用 optimize，quality 不适用
     elif fmt == "WEBP":
         img = img.convert("RGBA") if img.mode not in ("RGB", "RGBA") else img
-        save_kwargs["quality"] = max(1, min(100, quality))
+        save_kwargs["quality"] = actual_quality
     else:
-        save_kwargs["quality"] = max(1, min(100, quality))
+        save_kwargs["quality"] = actual_quality
+
+    # ── 3) 目标文件大小：迭代降低 quality 直到满足 ──
+    if target_filesize and fmt in ("JPEG", "WEBP"):
+        # 先试当前 quality
+        current_q = actual_quality
+        min_q = 5
+        step = 5
+        attempts = []
+        best_result = None
+
+        while current_q >= min_q:
+            save_kwargs["quality"] = current_q
+            buf = io.BytesIO()
+            _save_to_buf(img, buf, fmt, save_kwargs)
+            size = buf.tell()
+
+            attempts.append((current_q, size))
+            if best_result is None or abs(size - target_filesize) < abs(
+                best_result[1] - target_filesize
+            ):
+                best_result = (current_q, size, buf.getvalue())
+
+            if size <= target_filesize:
+                # 满足目标，直接用这个结果
+                save_kwargs["quality"] = current_q
+                # 重新正常保存（不走 buf，但返回正确的 quality）
+                buf = io.BytesIO()
+                _save_to_buf(img, buf, fmt, save_kwargs)
+                result_data = buf.getvalue()
+                return img, {**save_kwargs, "_target_quality": current_q, "_target_size": len(result_data)}
+
+            current_q -= step
+
+        # 没达到目标，用最接近的（通常 quality 最低时最小）
+        if best_result:
+            q, sz, data = best_result
+            save_kwargs["quality"] = q
+            save_kwargs["_target_quality"] = q
+            save_kwargs["_target_size"] = sz
 
     return img, save_kwargs
+
+
+def _save_to_buf(
+    img: Image.Image,
+    buf: io.BytesIO,
+    fmt: str,
+    save_kwargs: dict,
+) -> None:
+    """辅助函数：将图片保存到 BytesIO，处理不同格式的差异。"""
+    if fmt == "JPEG":
+        # 确保是 RGB
+        save_img = _to_rgb(img)
+    elif fmt == "PNG":
+        save_img = img.convert("RGBA") if img.mode != "RGBA" else img
+    elif fmt == "WEBP":
+        save_img = img.convert("RGBA") if img.mode not in ("RGB", "RGBA") else img
+    else:
+        save_img = img
+    save_img.save(buf, format=fmt, **save_kwargs)
 
 
 def save_image(
@@ -391,6 +465,9 @@ def batch_process_images(
         elif operation == "compress":
             quality = kwargs.get("quality", 85)
             max_dim = kwargs.get("max_dimension", None)
+            exact_size = kwargs.get("exact_size", None)
+            scale_pct = kwargs.get("scale_percent", None)
+            target_fs = kwargs.get("target_filesize", None)
             fmt = kwargs.get("output_format", None)
 
             out_ext = OUTPUT_FORMAT_MAP.get(fmt.upper(), src.suffix.lstrip(".")) if fmt else src.suffix.lstrip(".")
@@ -398,7 +475,15 @@ def batch_process_images(
                 out_ext = "jpg"
 
             out_path = output_dir / f"{src.stem}_compressed.{out_ext}"
-            img, save_kw = compress_image(image, quality=quality, max_dimension=max_dim, output_format=fmt)
+            img, save_kw = compress_image(
+                image,
+                quality=quality,
+                max_dimension=max_dim,
+                exact_size=exact_size,
+                scale_percent=scale_pct,
+                target_filesize=target_fs,
+                output_format=fmt,
+            )
             save_image(img, out_path, save_kw)
             results.append(str(out_path))
 
