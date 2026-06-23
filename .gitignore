@@ -1,0 +1,83 @@
+# ── Python ───────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# ── 虚拟环境 ──────────────────────────────────────────────
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+.venv/
+ico_env/
+
+# ── PyInstaller ───────────────────────────────────────────
+*.manifest
+*.spec
+build/
+dist/
+
+# ── 测试 & 覆盖率 ─────────────────────────────────────────
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# ── IDE / 编辑器 ──────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+
+# ── 操作系统 ──────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# ── 项目运行产物 ──────────────────────────────────────────
+# 输出目录
+output/
+outputs/
+test_batch*/
+test_*.ico
+test_*.png
+test_*.jpg
+
+# 临时文件
+*.tmp
+*.log
+*.bak
+
+# 复选框指示器临时资源
+pictools_cb_*/
